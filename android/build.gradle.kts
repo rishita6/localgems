@@ -7,12 +7,12 @@ allprojects {
         mavenCentral()
     }
 }
+
 val newBuildDir: Directory = rootProject.layout.buildDirectory.dir("../../build").get()
 rootProject.layout.buildDirectory.set(newBuildDir)
 
 subprojects {
     layout.buildDirectory.set(newBuildDir.dir(name))
-
     evaluationDependsOn(":app")
 }
 
@@ -20,14 +20,14 @@ tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
 
-// Top-level buildscript block for classpath dependencies
 buildscript {
-    
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath("com.google.gms:google-services:4.4.3")
+        classpath("com.android.tools.build:gradle:8.3.2")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
+        classpath("com.google.gms:google-services:4.4.2")
     }
 }

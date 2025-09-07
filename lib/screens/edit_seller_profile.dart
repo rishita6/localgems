@@ -1,169 +1,296 @@
 import 'dart:io';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
 
 class EditSellerProfile extends StatefulWidget {
-  final String uid;
-  const EditSellerProfile({super.key, required this.uid});
+  final String? uid;
+  const EditSellerProfile({super.key, this.uid});
 
   @override
   State<EditSellerProfile> createState() => _EditSellerProfileState();
 }
 
 class _EditSellerProfileState extends State<EditSellerProfile> {
+  static const Color kBg = Color(0xFFD0E3FF); // lavender
+  static const Color kCard = Color(0xFFFFFCF9); // cream-white
+  static const Color kAccent = Color(0xFFEF3167); // pink button
+  static const Color kTextDark = Color(0xFF222222);
+  static const Color kTextSoft = Color(0xFF666666);
+
   final _formKey = GlobalKey<FormState>();
+  bool _loading = true;
+  bool _saving = false;
 
-  // Controllers for form fields
-  late TextEditingController businessNameController;
-  late TextEditingController descriptionController;
-  late TextEditingController locationController;
-  late TextEditingController priceRangeController;
-
+  final nameCtrl = TextEditingController();
+  final emailCtrl = TextEditingController();
+  final contactCtrl = TextEditingController();
+  final businessNameCtrl = TextEditingController();
+  final descriptionCtrl = TextEditingController();
+  final locationCtrl = TextEditingController();
+  final priceRangeCtrl = TextEditingController();
   String category = '';
-  String imageUrl = '';
-  File? imageFile;
-  bool isLoading = false;
+  String profileImageUrl = '';
 
-  final List<String> categories = [
-    'Food & Beverages', 'Clothing', 'Accessories', 'Handicrafts',
-    'Home Decor', 'Grocery', 'Books', 'Stationery', 'Personal Care', 'Other'
+  final List<String> categories = const [
+    'Food & Beverages',
+    'Clothing',
+    'Accessories',
+    'Handicrafts',
+    'Home Decor',
+    'Grocery',
+    'Books',
+    'Stationery',
+    'Personal Care',
+    'Other',
   ];
+
+  static const String cloudName = 'dwncvfoiq';
+  static const String uploadPreset = 'flutter_localgems';
 
   @override
   void initState() {
     super.initState();
-    businessNameController = TextEditingController();
-    descriptionController = TextEditingController();
-    locationController = TextEditingController();
-    priceRangeController = TextEditingController();
-    _fetchCurrentDetails();
+    _loadSeller();
   }
 
-  Future<void> _fetchCurrentDetails() async {
-    final doc = await FirebaseFirestore.instance.collection('users').doc(widget.uid).get();
-    final data = doc.data();
-    if (data != null) {
-      setState(() {
-        businessNameController.text = data['businessName'] ?? '';
-        category = data['category'] ?? '';
-        descriptionController.text = data['description'] ?? '';
-        locationController.text = data['location'] ?? '';
-        priceRangeController.text = data['priceRange'] ?? '';
-        imageUrl = data['profilePic'] ?? '';
-      });
+  Future<String> _effectiveUid() async {
+    return widget.uid ?? FirebaseAuth.instance.currentUser!.uid;
+  }
+
+  Future<void> _loadSeller() async {
+    final uid = await _effectiveUid();
+    final doc =
+        await FirebaseFirestore.instance.collection('users').doc(uid).get();
+
+    if (doc.exists) {
+      final data = doc.data() as Map<String, dynamic>;
+      nameCtrl.text = data['name'] ?? '';
+      emailCtrl.text = data['email'] ?? '';
+      contactCtrl.text = data['contact'] ?? '';
+      businessNameCtrl.text = data['businessName'] ?? '';
+      descriptionCtrl.text = data['description'] ?? '';
+      locationCtrl.text = data['location'] ?? '';
+      priceRangeCtrl.text = data['priceRange'] ?? '';
+      category = (data['category'] ?? '').toString();
+      profileImageUrl = data['profileImage'] ?? '';
     }
+
+    if (mounted) setState(() => _loading = false);
   }
 
-  Future<void> _pickImage() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (picked != null) {
-      setState(() {
-        imageFile = File(picked.path);
-      });
-      await _uploadToCloudinary(imageFile!);
-    }
-  }
-
-  Future<void> _uploadToCloudinary(File image) async {
-    final url = Uri.parse('https://api.cloudinary.com/v1_1/dwncvfoiq/image/upload');
-    final request = http.MultipartRequest('POST', url)
-      ..fields['upload_preset'] = 'flutter_localgems'
-      ..files.add(await http.MultipartFile.fromPath('file', image.path));
-
-    final res = await request.send();
-    final resBody = await res.stream.bytesToString();
-    final responseData = json.decode(resBody);
-    setState(() {
-      imageUrl = responseData['secure_url'];
-    });
-  }
-
-  Future<void> _saveProfile() async {
+  Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    setState(() => _saving = true);
 
-    setState(() => isLoading = true);
-
-    await FirebaseFirestore.instance.collection('users').doc(widget.uid).update({
-      'businessName': businessNameController.text,
+    final uid = await _effectiveUid();
+    await FirebaseFirestore.instance.collection('users').doc(uid).update({
+      'name': nameCtrl.text.trim(),
+      'email': emailCtrl.text.trim(),
+      'contact': contactCtrl.text.trim(),
+      'businessName': businessNameCtrl.text.trim(),
+      'description': descriptionCtrl.text.trim(),
+      'location': locationCtrl.text.trim(),
+      'priceRange': priceRangeCtrl.text.trim(),
       'category': category,
-      'description': descriptionController.text,
-      'location': locationController.text,
-      'priceRange': priceRangeController.text,
-      'profilePic': imageUrl,
+      'profileImage': profileImageUrl,
     });
 
-    setState(() => isLoading = false);
-    Navigator.pop(context);
+    if (mounted) Navigator.pop(context);
   }
 
-  @override
-  void dispose() {
-    businessNameController.dispose();
-    descriptionController.dispose();
-    locationController.dispose();
-    priceRangeController.dispose();
-    super.dispose();
+  Future<void> _pickAndUploadImage() async {
+    final picked = await ImagePicker()
+        .pickImage(source: ImageSource.gallery, imageQuality: 85);
+    if (picked == null) return;
+
+    final file = File(picked.path);
+    final uri =
+        Uri.parse('https://api.cloudinary.com/v1_1/$cloudName/image/upload');
+    final req = http.MultipartRequest('POST', uri)
+      ..fields['upload_preset'] = uploadPreset
+      ..files.add(await http.MultipartFile.fromPath('file', file.path));
+
+    final res = await req.send();
+    final body = await res.stream.bytesToString();
+    final decoded = json.decode(body);
+    final url = decoded['secure_url']?.toString() ?? '';
+    if (url.isNotEmpty) setState(() => profileImageUrl = url);
   }
+
+  InputDecoration _decor(String hint) => InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: kTextSoft, fontSize: 13),
+        filled: true,
+        fillColor: Colors.white,
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide(color: Colors.grey.shade300)),
+        focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: kAccent, width: 2)),
+      );
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Edit Profile")),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
+      backgroundColor: kBg,
+      appBar: AppBar(
+        backgroundColor: kBg,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new, color: kTextDark),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text('Edit Profile',
+            style: TextStyle(
+                color: kTextDark, fontWeight: FontWeight.bold, fontSize: 18)),
+        centerTitle: true,
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator(color: kAccent))
           : SingleChildScrollView(
               padding: const EdgeInsets.all(16),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  children: [
-                    GestureDetector(
-                      onTap: _pickImage,
-                      child: CircleAvatar(
+              child: Column(
+                children: [
+                  // Avatar + camera
+                  Stack(
+                    children: [
+                      CircleAvatar(
                         radius: 60,
-                        backgroundImage: imageUrl.isNotEmpty
-                            ? NetworkImage(imageUrl)
-                            : const AssetImage('./lib/assets/placeholder.png') as ImageProvider,
+                        backgroundImage: profileImageUrl.isNotEmpty
+                            ? NetworkImage(profileImageUrl)
+                            : const AssetImage('lib/assets/placeholder.png')
+                                as ImageProvider,
+                        backgroundColor: Colors.grey.shade300,
+                      ),
+                      Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: InkWell(
+                          onTap: _pickAndUploadImage,
+                          borderRadius: BorderRadius.circular(22),
+                          child: Container(
+                            decoration: const BoxDecoration(
+                                color: kAccent, shape: BoxShape.circle),
+                            padding: const EdgeInsets.all(8),
+                            child: const Icon(Icons.camera_alt,
+                                size: 20, color: Colors.white),
+                          ),
+                        ),
+                      )
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Form
+                  Form(
+                    key: _formKey,
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: kCard,
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.05),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          )
+                        ],
+                      ),
+                      child: Column(
+                        children: [
+                          TextFormField(
+                              controller: nameCtrl,
+                              style: const TextStyle(color: kTextDark),
+                              decoration: _decor("Owner Name"),
+                              validator: (v) =>
+                                  v!.isEmpty ? 'Required' : null),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                              controller: businessNameCtrl,
+                              style: const TextStyle(color: kTextDark),
+                              decoration: _decor("Business Name"),
+                              validator: (v) =>
+                                  v!.isEmpty ? 'Required' : null),
+                          const SizedBox(height: 14),
+                          DropdownButtonFormField<String>(
+                            value: category.isNotEmpty ? category : null,
+                            dropdownColor: kCard,
+                            items: categories
+                                .map((c) => DropdownMenuItem(
+                                    value: c,
+                                    child: Text(c,
+                                        style: const TextStyle(
+                                            color: kTextDark))))
+                                .toList(),
+                            onChanged: (v) =>
+                                setState(() => category = v ?? ''),
+                            decoration: _decor("Category"),
+                          ),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                            controller: descriptionCtrl,
+                            maxLines: 3,
+                            style: const TextStyle(color: kTextDark),
+                            decoration: _decor("Description"),
+                          ),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                              controller: contactCtrl,
+                              style: const TextStyle(color: kTextDark),
+                              keyboardType: TextInputType.phone,
+                              decoration: _decor("Contact")),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                              controller: emailCtrl,
+                              style: const TextStyle(color: kTextDark),
+                              keyboardType: TextInputType.emailAddress,
+                              decoration: _decor("Email")),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                              controller: locationCtrl,
+                              style: const TextStyle(color: kTextDark),
+                              decoration: _decor("Location")),
+                          const SizedBox(height: 14),
+                          TextFormField(
+                              controller: priceRangeCtrl,
+                              style: const TextStyle(color: kTextDark),
+                              keyboardType: TextInputType.number,
+                              decoration: _decor("Price Range")),
+                          const SizedBox(height: 24),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton(
+                              onPressed: _saving ? null : _save,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: kAccent,
+                                foregroundColor: Colors.white,
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14)),
+                              ),
+                              child: _saving
+                                  ? const SizedBox(
+                                      height: 22,
+                                      width: 22,
+                                      child: CircularProgressIndicator(
+                                          color: Colors.white, strokeWidth: 2))
+                                  : const Text("Save Changes",
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: businessNameController,
-                      decoration: const InputDecoration(labelText: "Business Name"),
-                      validator: (val) => val!.isEmpty ? 'Required' : null,
-                    ),
-                    DropdownButtonFormField<String>(
-                      value: category.isNotEmpty ? category : null,
-                      decoration: const InputDecoration(labelText: "Category"),
-                      items: categories.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
-                      onChanged: (val) => setState(() => category = val!),
-                    ),
-                    TextFormField(
-                      controller: descriptionController,
-                      decoration: const InputDecoration(labelText: "Description"),
-                      maxLines: 3,
-                      validator: (val) => val!.isEmpty ? 'Required' : null,
-                    ),
-                    TextFormField(
-                      controller: locationController,
-                      decoration: const InputDecoration(labelText: "Location"),
-                      validator: (val) => val!.isEmpty ? 'Required' : null,
-                    ),
-                    TextFormField(
-                      controller: priceRangeController,
-                      decoration: const InputDecoration(labelText: "Price Range"),
-                      validator: (val) => val!.isEmpty ? 'Required' : null,
-                    ),
-                    const SizedBox(height: 30),
-                    ElevatedButton(
-                      onPressed: _saveProfile,
-                      child: const Text('Save Changes'),
-                    ),
-                  ],
-                ),
+                  )
+                ],
               ),
             ),
     );

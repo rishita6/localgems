@@ -1,10 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:localgems_proj/screens/login_page.dart';
-import 'package:localgems_proj/screens/signup_page.dart';
 import 'firebase_options.dart';
+
+import 'screens/login_page.dart';
+import 'screens/signup_page.dart';
+
+// Customer imports
 import 'screens/customer_home.dart';
+// (later: customer_search.dart, customer_cart.dart, etc.)
+
+// Seller imports
 import 'screens/seller_home.dart';
+// (later: seller_orders.dart, seller_profile.dart, etc.)
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,25 +28,14 @@ class MyApp extends StatelessWidget {
       title: 'LocalGems',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        scaffoldBackgroundColor: const Color.fromARGB(255, 179, 162, 218), 
+        scaffoldBackgroundColor: Colors.white,
         fontFamily: 'Poppins',
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFFFB200), // Sunset yellow theme
+          seedColor: const Color(0xFFFFB200), // Yellow accent
           brightness: Brightness.light,
         ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color.fromARGB(255, 255, 115, 0), // Yellow buttons
-            foregroundColor: Colors.black,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
-            ),
-            elevation: 4,
-          ),
-        ),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF640D5F), // Dark violet header
+          backgroundColor: Color(0xFF640D5F), // Dark violet
           foregroundColor: Colors.white,
           titleTextStyle: TextStyle(
             fontSize: 20,
@@ -47,20 +43,30 @@ class MyApp extends StatelessWidget {
             fontFamily: 'Poppins',
           ),
         ),
-        textTheme: const TextTheme(
-          bodyMedium: TextStyle(
-            fontSize: 16,
-            fontFamily: 'Poppins',
-            color: Colors.black87,
-          ),
-        ),
       ),
+      // Always start at login
       initialRoute: '/login',
-      routes: {
-        '/login': (context) => const login_page(),
-        '/signup': (context) => const signup_page(),
-        '/customer_home': (context) => const CustomerHomePage(),
-        '/seller_home': (context) => const SellerHomePage(),
+      onGenerateRoute: (settings) {
+        switch (settings.name) {
+          // Auth
+          case '/login':
+            return MaterialPageRoute(builder: (_) => const login_page());
+          case '/signup':
+            return MaterialPageRoute(builder: (_) => const SignupPage());
+
+          // Customer flow
+          case '/customer_home':
+            return MaterialPageRoute(builder: (_) => const CustomerHomePage());
+
+          // Seller flow
+          case '/seller_home':
+            return MaterialPageRoute(builder: (_) => const SellerHomePage());
+
+          default:
+            return MaterialPageRoute(
+              builder: (_) => const login_page(),
+            );
+        }
       },
     );
   }
