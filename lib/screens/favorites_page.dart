@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'common_widgets.dart';
+import 's_profilep.dart'; // navigate to store profile
 
 class FavoriteStoresPage extends StatelessWidget {
   final String uid;
@@ -74,8 +75,16 @@ class FavoriteStoresPage extends StatelessWidget {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     child: InkWell(
                       borderRadius: BorderRadius.circular(12),
-                      onTap: () {
-                        // TODO: navigate to store details
+                      onTap: () async {
+                        // navigate to store details if we have storeId
+                        if (storeId.isNotEmpty) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => s_profilep(sellerId: storeId)),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Store id not available to open profile')));
+                        }
                       },
                       child: Padding(
                         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),

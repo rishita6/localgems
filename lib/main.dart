@@ -4,7 +4,7 @@ import 'firebase_options.dart';
 
 import 'screens/login_page.dart';
 import 'screens/signup_page.dart';
-
+import 'screens/welcom.dart';
 // Customer imports
 import 'screens/customer_home.dart';
 // (later: customer_search.dart, customer_cart.dart, etc.)
@@ -45,14 +45,17 @@ class MyApp extends StatelessWidget {
         ),
       ),
       // Always start at login
-      initialRoute: '/login',
+      initialRoute: '/welcome',
       onGenerateRoute: (settings) {
         switch (settings.name) {
+          case '/welcome':
+            return MaterialPageRoute(builder: (_) => const WelcomePage());
           // Auth
           case '/login':
             return MaterialPageRoute(builder: (_) => const login_page());
           case '/signup':
             return MaterialPageRoute(builder: (_) => const SignupPage());
+         
 
           // Customer flow
           case '/customer_home':
@@ -63,9 +66,7 @@ class MyApp extends StatelessWidget {
             return MaterialPageRoute(builder: (_) => const SellerHomePage());
 
           default:
-            return MaterialPageRoute(
-              builder: (_) => const login_page(),
-            );
+            return MaterialPageRoute(builder: (_) => const login_page());
         }
       },
     );

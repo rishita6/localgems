@@ -4,6 +4,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+// Import seller orders/details page so we can navigate to order details
+import 'seller_orders_page.dart';
+
 class s_dashboard extends StatefulWidget {
   const s_dashboard({super.key});
 
@@ -116,7 +119,7 @@ class _s_dashboardState extends State<s_dashboard> {
           date = DateTime.fromMillisecondsSinceEpoch(ts);
         }
 
-        // push summary for recentOrders
+        // push summary for recentOrders (keep order id so we can fetch full doc when tapping)
         recentOrders.add({
           'id': doc.id,
           'status': (data['orderStatus'] ?? '').toString(),
@@ -327,7 +330,31 @@ class _s_dashboardState extends State<s_dashboard> {
   Widget _orderTile(Map<String, dynamic> order) {
     return InkWell(
       onTap: () async {
-        // navigate to order details - you can reuse the OrderDetailsPage from earlier file
+        final id = order['id']?.toString();
+        if (id == null || id.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Order id missing')));
+          }
+          return;
+        }
+
+        try {
+          final docSnap = await FirebaseFirestore.instance.collection('orders').doc(id).get();
+          if (!docSnap.exists) {
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Order not found')));
+            return;
+          }
+          final data = docSnap.data() ?? <String, dynamic>{};
+
+          // Navigate to seller-facing order details page
+          if (mounted) {
+            Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => OrderDetailsPage(orderId: id, orderData: Map<String, dynamic>.from(data), mySellerId: sellerId),
+            ));
+          }
+        } catch (e) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to open order: $e')));
+        }
       },
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),

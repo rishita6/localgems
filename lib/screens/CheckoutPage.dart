@@ -1,8 +1,12 @@
-// lib/checkout_page.dart (updated UI - blue & pink theme)
+// lib/checkout_page.dart
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import 'payments_page.dart'; // adjust path if needed
 
 class _ThemePalette {
   static const blueBg = Color(0xFFD0E3FF);
@@ -21,26 +25,312 @@ class CheckoutPage extends StatefulWidget {
 
 class _CheckoutPageState extends State<CheckoutPage> {
   String? selectedAddressId;
-  String paymentMethod = "cod"; // default COD
+  String paymentMethod = "cod"; // "cod" or "online"
   bool isPlacingOrder = false;
-
-  late Razorpay _razorpay;
 
   @override
   void initState() {
     super.initState();
-    _razorpay = Razorpay();
-    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handleSuccess);
-    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handleError);
-    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
   }
 
-  @override
-  void dispose() {
-    _razorpay.clear();
-    super.dispose();
+  /// ---------------- PLACE ORDER (COD or AFTER PAYMENT) ----------------
+  /// Note: this creates the final order doc only after payment (or if COD).
+  Future<void> _createOrderRecord({
+    required String uid,
+    required List<Map<String, dynamic>> orderItems,
+    required Map<String, dynamic>? addressData,
+    required String paymentMethodValue,
+    required String paymentStatusValue,
+    required String paymentIdValue,
+    required int totalAmount,
+    String? sellerId,
+  }) async {
+    final orderRef = FirebaseFirestore.instance.collection('orders').doc();
+    await orderRef.set({
+      'userId': uid,
+      'items': orderItems,
+      'address': addressData,
+      'paymentMethod': paymentMethodValue,
+      'paymentStatus': paymentStatusValue,
+      'paymentId': paymentIdValue,
+      'orderStatus': "placed",
+      'createdAt': FieldValue.serverTimestamp(),
+      'totalAmount': totalAmount,
+      if (sellerId != null) 'sellerId': sellerId,
+    });
   }
 
+  Future<void> _clearCartForUser(String uid) async {
+    final cartSnap = await FirebaseFirestore.instance.collection('users').doc(uid).collection('cart').get();
+    for (var doc in cartSnap.docs) {
+      await doc.reference.delete();
+    }
+  }
+
+  /// ---------------- ONLINE CHECKOUT FLOW ----------------
+  Future<void> _checkoutOnlineFlow() async {
+    setState(() => isPlacingOrder = true);
+    try {
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+
+      // ensure cart not empty
+      final cartSnap = await FirebaseFirestore.instance.collection('users').doc(uid).collection('cart').get();
+      if (cartSnap.docs.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Your cart is empty')));
+        return;
+      }
+
+      // ensure address selected
+      if (selectedAddressId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Select a delivery address')));
+        return;
+      }
+
+      // read preferred payment method id from user doc (optional logic kept)
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final preferredId = userDoc.data()?['preferred_payment_method_id'] as String?;
+
+      if (preferredId == null || preferredId.isEmpty) {
+        // if you want to let user enter txn id manually without saved method, you can still proceed.
+        // but current UX expects saved UPI — ask user to add one
+        await _showAddUpiRequiredDialog();
+        return;
+      }
+
+      // read the preferred method doc
+      final methodDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('payment_methods')
+          .doc(preferredId)
+          .get();
+
+      if (!methodDoc.exists) {
+        await _showAddUpiRequiredDialog();
+        return;
+      }
+
+      final methodData = methodDoc.data()!;
+      final type = methodData['type'] as String? ?? 'card';
+      if (type != 'upi') {
+        await _showSetUpiPreferredDialog();
+        return;
+      }
+
+      // Now: determine seller to pay (assumes all cart items are from same seller or uses first item's seller)
+      final firstItem = cartSnap.docs.first.data();
+      final sellerId = (firstItem['sellerId'] ?? firstItem['seller'] ?? firstItem['sellerUid'])?.toString();
+      if (sellerId == null || sellerId.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Seller information missing for cart items')));
+        return;
+      }
+
+      // fetch seller data and seller UPI
+      final sellerSnap = await FirebaseFirestore.instance.collection('users').doc(sellerId).get();
+      if (!sellerSnap.exists) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Seller record not found')));
+        return;
+      }
+      final sellerData = sellerSnap.data()!;
+      final sellerUpi = (sellerData['upi'] ?? '') as String;
+      final sellerName = (sellerData['businessName'] ?? sellerData['name'] ?? 'Seller') as String;
+      if (sellerUpi.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Seller does not have a UPI ID; cannot pay online')));
+        return;
+      }
+
+      // calculate total
+      final orderItems = cartSnap.docs.map((d) => Map<String, dynamic>.from(d.data())).toList();
+      final total = orderItems.fold<int>(0, (sum, item) {
+        return (sum + ((item['price'] ?? 0) * (item['quantity'] ?? 1))).toInt();
+      });
+
+      // Build UPI uri and launch
+      final uri = _buildUpiUriForPayment(
+        payeeUpi: sellerUpi,
+        payeeName: sellerName,
+        amount: (total / 1).toStringAsFixed(2),
+        note: 'Order payment to $sellerName',
+        tr: null, // optional txn reference (we'll use order id after payment)
+      );
+
+      // try to launch UPI app
+      try {
+        final parsed = Uri.parse(uri.toString());
+        if (await canLaunchUrl(parsed)) {
+          await launchUrl(parsed);
+          // UPI app opened — ask user to paste txn id when done
+          final txn = await _askForTxnDialog(sellerUpi, total);
+          if (txn != null && txn.isNotEmpty) {
+            // create order now with payment recorded
+            final addressData = (await FirebaseFirestore.instance.collection('users').doc(uid).collection('addresses').doc(selectedAddressId).get()).data();
+            await _createOrderRecord(
+              uid: uid,
+              orderItems: orderItems,
+              addressData: addressData,
+              paymentMethodValue: 'upi',
+              paymentStatusValue: 'paid',
+              paymentIdValue: txn,
+              totalAmount: total,
+              sellerId: sellerId,
+            );
+            // clear cart
+            await _clearCartForUser(uid);
+
+            if (mounted) {
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment recorded. Order placed.')));
+            }
+          } else {
+            // user cancelled txn entry — do nothing (order not created)
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment not confirmed — order not placed')));
+          }
+        } else {
+          // no UPI app available — fallback to manual txn entry
+          final txn = await _askForTxnDialog(sellerUpi, total);
+          if (txn != null && txn.isNotEmpty) {
+            final addressData = (await FirebaseFirestore.instance.collection('users').doc(uid).collection('addresses').doc(selectedAddressId).get()).data();
+            await _createOrderRecord(
+              uid: uid,
+              orderItems: orderItems,
+              addressData: addressData,
+              paymentMethodValue: 'upi',
+              paymentStatusValue: 'paid',
+              paymentIdValue: txn,
+              totalAmount: total,
+              sellerId: sellerId,
+            );
+            await _clearCartForUser(uid);
+            if (mounted) {
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment recorded. Order placed.')));
+            }
+          } else {
+            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment not confirmed — order not placed')));
+          }
+        }
+      } catch (e) {
+        debugPrint('UPI launch error: $e');
+        final txn = await _askForTxnDialog(sellerUpi, total);
+        if (txn != null && txn.isNotEmpty) {
+          final addressData = (await FirebaseFirestore.instance.collection('users').doc(uid).collection('addresses').doc(selectedAddressId).get()).data();
+          await _createOrderRecord(
+            uid: uid,
+            orderItems: orderItems,
+            addressData: addressData,
+            paymentMethodValue: 'upi',
+            paymentStatusValue: 'paid',
+            paymentIdValue: txn,
+            totalAmount: total,
+            sellerId: sellerId,
+          );
+          await _clearCartForUser(uid);
+          if (mounted) {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment recorded. Order placed.')));
+          }
+        } else {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Payment not confirmed — order not placed')));
+        }
+      }
+    } catch (e, st) {
+      debugPrint('checkoutOnlineFlow error: $e\n$st');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Payment flow error: $e')));
+    } finally {
+      if (mounted) setState(() => isPlacingOrder = false);
+    }
+  }
+
+  Future<void> _showAddUpiRequiredDialog() async {
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add UPI to pay'),
+        content: const Text('You need to add a UPI ID as a payment method before paying online.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentsPage(uid: FirebaseAuth.instance.currentUser!.uid)));
+            },
+            child: const Text('Add UPI'),
+          )
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showSetUpiPreferredDialog() async {
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Set a UPI as preferred'),
+        content: const Text('Your preferred payment method is not a UPI. Please set one of your saved UPI methods as Preferred to pay.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentsPage(uid: FirebaseAuth.instance.currentUser!.uid)));
+            },
+            child: const Text('Open Payment Methods'),
+          )
+        ],
+      ),
+    );
+  }
+
+  // Build UPI URI for paying the seller
+  Uri _buildUpiUriForPayment({
+    required String payeeUpi,
+    required String payeeName,
+    required String amount,
+    required String note,
+    String? tr,
+  }) {
+    final params = {
+      'pa': payeeUpi,
+      'pn': payeeName,
+      'tn': note,
+      'am': amount,
+      'cu': 'INR',
+    };
+    if (tr != null) params['tr'] = tr;
+    return Uri(scheme: 'upi', host: 'pay', queryParameters: params);
+  }
+
+  Future<String?> _askForTxnDialog(String sellerUpi, int total) async {
+    final controller = TextEditingController();
+    return showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Confirm Payment'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text("Please pay ₹$total to UPI ID:"),
+            const SizedBox(height: 8),
+            SelectableText(sellerUpi, style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Enter UPI Transaction ID',
+                hintText: 'e.g. TXN12345...',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, null), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+  }
+
+  /// ---------------- PLACE ORDER (COD) ----------------
   Future<void> _placeOrder({bool paid = false, String? txnId}) async {
     final uid = FirebaseAuth.instance.currentUser!.uid;
     final cartSnap = await FirebaseFirestore.instance
@@ -73,25 +363,23 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
     final addressData = addressDoc.data();
 
-    // Prepare order
-    final orderItems = cartSnap.docs.map((doc) => doc.data()).toList();
+    // Prepare order items and totals
+    final orderItems = cartSnap.docs.map((doc) => Map<String, dynamic>.from(doc.data())).toList();
     final totalAmount = orderItems.fold(0, (sum, item) {
       return (sum + ((item['price'] ?? 0) * (item['quantity'] ?? 1))).toInt();
     });
 
-    final orderRef = FirebaseFirestore.instance.collection('orders').doc();
-
-    await orderRef.set({
-      'userId': uid,
-      'items': orderItems,
-      'address': addressData,
-      'paymentMethod': paymentMethod,
-      'paymentStatus': paid ? "paid" : "pending",
-      'paymentId': txnId ?? "",
-      'orderStatus': "placed",
-      'createdAt': DateTime.now(),
-      'totalAmount': totalAmount,
-    });
+    // create order now (COD)
+    await _createOrderRecord(
+      uid: uid,
+      orderItems: orderItems,
+      addressData: addressData,
+      paymentMethodValue: 'cod',
+      paymentStatusValue: paid ? 'paid' : 'pending',
+      paymentIdValue: txnId ?? '',
+      totalAmount: totalAmount,
+      // optional sellerId omitted here (you can add if needed)
+    );
 
     // Clear cart
     for (var doc in cartSnap.docs) {
@@ -107,42 +395,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
     }
   }
 
-  /// 🔹 Razorpay Checkout
-  void _openRazorpay(double amount) {
-    var options = {
-      'key': 'rzp_test_123456789', // ⚠️ Replace with your Razorpay Key ID
-      'amount': (amount * 100).toInt(), // in paise
-      'name': 'My Shop',
-      'description': 'Order Payment',
-      'prefill': {
-        'contact': '9876543210',
-        'email': 'customer@gmail.com',
-      }
-    };
-
-    try {
-      _razorpay.open(options);
-    } catch (e) {
-      debugPrint('Razorpay error: $e');
-    }
-  }
-
-  void _handleSuccess(PaymentSuccessResponse res) {
-    _placeOrder(paid: true, txnId: res.paymentId);
-    ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Payment Successful ✅")));
-  }
-
-  void _handleError(PaymentFailureResponse res) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("Payment Failed ❌: ${res.message ?? "Unknown error"}")));
-  }
-
-  void _handleExternalWallet(ExternalWalletResponse res) {
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("External Wallet Selected: ${res.walletName}")));
-  }
-
+  /// ---------------- CALCULATE TOTAL ----------------
   Future<int> _calculateTotal() async {
     final uid = FirebaseAuth.instance.currentUser!.uid;
     final cartSnap = await FirebaseFirestore.instance
@@ -189,7 +442,6 @@ class _CheckoutPageState extends State<CheckoutPage> {
                             color: _ThemePalette.textDark)),
                     const SizedBox(height: 12),
 
-                    // Address list inside card
                     Expanded(
                       child: Card(
                         shape: RoundedRectangleBorder(
@@ -233,7 +485,8 @@ class _CheckoutPageState extends State<CheckoutPage> {
                                       style: TextStyle(color: _ThemePalette.textDark, fontWeight: FontWeight.w600),
                                     ),
                                     subtitle: Text(
-                                      "${data['line1']}, ${data['city']} - ${data['pincode']}\nPhone: ${data['phone']}",
+                                      // keep subtitle concise so UI doesn't break
+                                      "${data['label'] ?? data['line1'] ?? ''} ${data['city'] ?? ''}",
                                       style: TextStyle(color: _ThemePalette.textSoft),
                                     ),
                                   );
@@ -269,7 +522,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
                             value: "online",
                             groupValue: paymentMethod,
                             onChanged: (val) => setState(() => paymentMethod = val!),
-                            title: const Text("Pay Online (UPI / Card / Wallet)"),
+                            title: const Text("Pay Online (UPI only)"),
                           ),
                         ],
                       ),
@@ -277,14 +530,13 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
                     const SizedBox(height: 12),
 
-                    // Note / help
                     Row(
                       children: [
                         Icon(Icons.info_outline, color: _ThemePalette.textSoft),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            "You can change the payment method later from order details.",
+                            "Online payments use UPI only. Make sure you've added a UPI method in Payment Methods.",
                             style: TextStyle(color: _ThemePalette.textSoft),
                           ),
                         )
@@ -295,7 +547,6 @@ class _CheckoutPageState extends State<CheckoutPage> {
               ),
             ),
 
-            // Bottom bar with total + place order button
             FutureBuilder<int>(
               future: _calculateTotal(),
               builder: (context, snap) {
@@ -315,34 +566,39 @@ class _CheckoutPageState extends State<CheckoutPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Total', style: TextStyle(color: _ThemePalette.textSoft)),
-                            const SizedBox(height: 6),
-                            Text('₹$total', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: _ThemePalette.textDark)),
+                            Text("Total Amount", style: TextStyle(color: _ThemePalette.textSoft)),
+                            const SizedBox(height: 4),
+                            Text("₹$total",
+                                style: const TextStyle(
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.bold,
+                                    color: _ThemePalette.pink)),
                           ],
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      SizedBox(
-                        width: 180,
-                        child: ElevatedButton(
-                          onPressed: isPlacingOrder
-                              ? null
-                              : () async {
-                                  if (paymentMethod == "cod") {
-                                    await _placeOrder(paid: false);
-                                  } else if (paymentMethod == "online") {
-                                    _openRazorpay(total.toDouble());
-                                  }
-                                },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _ThemePalette.pink,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                          ),
-                          child: isPlacingOrder
-                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                              : const Text('Place Order', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _ThemePalette.pink,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                         ),
+                        onPressed: isPlacingOrder
+                            ? null
+                            : () async {
+                                if (paymentMethod == "cod") {
+                                  await _placeOrder();
+                                } else {
+                                  await _checkoutOnlineFlow();
+                                }
+                              },
+                        child: isPlacingOrder
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                              )
+                            : const Text("Place Order",
+                                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                       )
                     ],
                   ),

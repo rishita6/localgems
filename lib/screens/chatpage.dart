@@ -9,6 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 
 import 'chatservice.dart';
+import 's_profilep.dart'; // <-- open seller profile when tapping avatar
 
 class _Palette {
   static const blueBg = Color(0xFFD0E3FF); // page background
@@ -48,6 +49,8 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     // Mark as read when opening chat
+      ChatService().markAsRead(widget.chatId, FirebaseAuth.instance.currentUser!.uid);
+
     _chatService.markAsRead(widget.chatId, _me.uid);
     // small delay then scroll to bottom (if messages exist)
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
@@ -161,8 +164,27 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  void _openProfile() {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => UserProfilePage(uid: widget.otherUid)));
+  /// NEW: open profile — if user is a seller, open seller store (s_profilep),
+  /// otherwise fallback to in-file UserProfilePage.
+  Future<void> _openProfile() async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('users').doc(widget.otherUid).get();
+      final data = doc.data();
+      final role = (data?['role'] ?? '').toString();
+      if (role.toLowerCase() == 'seller') {
+        // open seller profile page
+        if (!mounted) return;
+        Navigator.push(context, MaterialPageRoute(builder: (_) => s_profilep(sellerId: widget.otherUid)));
+      } else {
+        if (!mounted) return;
+        Navigator.push(context, MaterialPageRoute(builder: (_) => UserProfilePage(uid: widget.otherUid)));
+      }
+    } catch (e) {
+      debugPrint('openProfile error: $e');
+      if (!mounted) return;
+      // fallback
+      Navigator.push(context, MaterialPageRoute(builder: (_) => UserProfilePage(uid: widget.otherUid)));
+    }
   }
 
   @override

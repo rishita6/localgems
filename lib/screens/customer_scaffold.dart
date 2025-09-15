@@ -1,5 +1,7 @@
+// lib/customer_scaffold.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'addToCart.dart';
 import 'favorites_page.dart';
 
@@ -47,6 +49,164 @@ class CustomerScaffold extends StatelessWidget {
     this.locationLabel = 'Your Location',
   });
 
+  // helper: fetch saved addresses (labels only) for the signed-in user
+  Future<List<Map<String, dynamic>>> _fetchSavedAddresses() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return [];
+    final snap = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .collection('addresses')
+        .orderBy('createdAt', descending: true)
+        .get();
+
+    return snap.docs.map((d) {
+      final data = d.data();
+      return {
+        'id': d.id,
+        'label': (data['label'] ?? 'Address').toString(),
+        // keep a short preview (not full address) if you stored `fullAddress` or `line1`
+        'preview': (data['label'] ?? data['fullAddress'] ?? data['line1'] ?? '').toString(),
+        'lat': data['lat'],
+        'lng': data['lng'],
+      };
+    }).toList();
+  }
+
+  // show address picker bottom sheet (labels only)
+  Future<void> _showAddressPicker(BuildContext context) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      // Ask user to login
+      showModalBottomSheet(
+        context: context,
+        builder: (ctx) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text('Please login to select a saved address', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    // Optionally navigate to login screen here
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+                  child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('OK', style: TextStyle(color: AppColors.white))),
+                )
+              ]),
+            ),
+          );
+        },
+      );
+      return;
+    }
+
+    // Fetch addresses once
+    final addresses = await _fetchSavedAddresses();
+
+    await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(4)),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16.0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text('Select address',
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (addresses.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Column(
+                      children: [
+                        const Text('No saved addresses found.'),
+                        const SizedBox(height: 12),
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.add_location_alt),
+                          label: const Text('Add from map'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.accent,
+                          ),
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            // user can open LocationPage from wherever; we simply close sheet
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                    ),
+                  )
+                else
+                  Flexible(
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: addresses.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (c, i) {
+                        final a = addresses[i];
+                        final label = a['label'] ?? 'Address';
+                        final preview = a['preview'] ?? '';
+                        return ListTile(
+                          title: Text(label,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600)),
+                          subtitle: preview.isNotEmpty ? Text(preview, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+                          leading: const Icon(Icons.place_outlined, color: AppColors.accent),
+                          onTap: () {
+                            Navigator.pop(ctx, a['id'] as String?);
+                            // show short feedback
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Selected: $label')),
+                            );
+                          },
+                          trailing: IconButton(
+                            icon: const Icon(Icons.edit_outlined),
+                            onPressed: () {
+                              // open edit address flow: we don't change file names here
+                              Navigator.pop(ctx);
+                              // developer note: navigate to your EditAddressPage here
+                            },
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final showAppBar = !hideAppBarForIndexes.contains(currentIndex);
@@ -64,7 +224,8 @@ class CustomerScaffold extends StatelessWidget {
                   const SizedBox(width: 8),
                   GestureDetector(
                     onTap: () {
-                      // later: open location picker
+                      // OPEN saved address picker (labels-only, no full address shown)
+                      _showAddressPicker(context);
                     },
                     child: Row(
                       children: [
@@ -110,7 +271,6 @@ class CustomerScaffold extends StatelessWidget {
                       MaterialPageRoute(
                         builder: (_) => const AddToCart(),
                       ),
-                      
                     );
                   },
                 ),

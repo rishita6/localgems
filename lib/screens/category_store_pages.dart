@@ -98,7 +98,7 @@ class CategoryStoresPage extends StatelessWidget {
                       ),
                     ),
                     subtitle: Text(
-                      [cat, city].where((e) => e.isNotEmpty).join(" • "),
+                      [cat,].where((e) => e.isNotEmpty).join(" • "),
                       style: const TextStyle(color: AppColors.textSoft),
                     ),
                     trailing: const Icon(Icons.chevron_right,

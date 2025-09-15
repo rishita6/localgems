@@ -1,3 +1,4 @@
+// lib/screens/seller_orders_page.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -295,6 +296,10 @@ class _OrderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final sColor = _statusColor(status);
 
+    // transaction id lookup (support multiple possible field names)
+    final txnRaw = (docData['paymentId'] ?? docData['txnId'] ?? docData['paymentTransactionId'] ?? docData['transactionId']);
+    final txnString = txnRaw?.toString() ?? '';
+
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: onTap,
@@ -403,28 +408,45 @@ class _OrderCard extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: (paymentStatus == "paid"
-                                  ? _Palette.green
-                                  : _Palette.orange)
-                              .withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          paymentStatus.toUpperCase(),
-                          style: TextStyle(
-                            color: paymentStatus == "paid"
-                                ? _Palette.green
-                                : _Palette.orange,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 11,
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: (paymentStatus == "paid"
+                                      ? _Palette.green
+                                      : _Palette.orange)
+                                  .withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              paymentStatus.toUpperCase(),
+                              style: TextStyle(
+                                color: paymentStatus == "paid"
+                                    ? _Palette.green
+                                    : _Palette.orange,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                              ),
+                            ),
                           ),
-                        ),
+                          if (txnString.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 160),
+                              child: Text(
+                                'Txn: ${_shorten(txnString)}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 12, color: _Palette.textSoft),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ],
                   ),
@@ -435,6 +457,11 @@ class _OrderCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  static String _shorten(String s, [int max = 18]) {
+    if (s.length <= max) return s;
+    return '${s.substring(0, max - 3)}...';
   }
 }
 
@@ -478,6 +505,9 @@ class OrderDetailsPage extends StatelessWidget {
     final paymentMethod = (orderData['paymentMethod'] ?? 'cod').toString();
     final paymentStatus = (orderData['paymentStatus'] ?? 'pending').toString();
 
+    // transaction id (multiple possible field names)
+    final txn = (orderData['paymentId'] ?? orderData['txnId'] ?? orderData['paymentTransactionId'] ?? orderData['transactionId'])?.toString() ?? '';
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Order details'),
@@ -512,7 +542,7 @@ class OrderDetailsPage extends StatelessWidget {
                         children: [
                           Text(name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
                           const SizedBox(height: 6),
-                          Text('Quantity: \$qty', style: const TextStyle(color: _Palette.textSoft)),
+                          Text('Quantity: $qty', style: const TextStyle(color: _Palette.textSoft)),
                         ],
                       ),
                     )
@@ -533,6 +563,16 @@ class OrderDetailsPage extends StatelessWidget {
                   Text(addressLines.join(', '), style: const TextStyle(color: _Palette.textSoft)),
                 if (addressLines.isEmpty) Text('Address not provided', style: const TextStyle(color: _Palette.textSoft)),
                 const SizedBox(height: 12),
+
+                // show transaction id if present
+                if (txn.isNotEmpty) ...[
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  const Text('Transaction ID', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 6),
+                  SelectableText(txn, style: const TextStyle(color: _Palette.textDark)),
+                  const SizedBox(height: 12),
+                ],
 
                 // allow seller to change status from details too
                 const SizedBox(height: 8),
