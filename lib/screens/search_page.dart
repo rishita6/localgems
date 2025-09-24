@@ -170,11 +170,15 @@ class _search_pageState extends State<search_page> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
+                          // you can add or remove chips here — chosen labels should match product.category values (or be substrings)
                           _filterChip("Clothing"),
                           _filterChip("Food"),
+                          _filterChip("Food & Beverages"),
                           _filterChip("Books"),
                           _filterChip("Electronics"),
                           _filterChip("Handicrafts"),
+                          _filterChip("Mehendi"),
+                          _filterChip("Parlour"),
                         ],
                       ),
                       const SizedBox(height: 20),
@@ -291,10 +295,16 @@ class _search_pageState extends State<search_page> {
 
           if (!matchesSearch || !matchesPrice) continue;
 
-          // category filter (if any)
+          // category filter (if any) — NEW: match product category against selected filters
           if (_selectedCategories.isNotEmpty) {
-            final cat = (data['category'] ?? '').toString();
-            if (!_selectedCategories.contains(cat)) continue;
+            final prodCatRaw = (data['category'] ?? '').toString();
+            final prodCat = prodCatRaw.toLowerCase();
+            // match any selected category (case-insensitive, substring match)
+            bool categoryMatch = _selectedCategories.any((sel) {
+              final selNorm = sel.toLowerCase();
+              return prodCat.contains(selNorm) || selNorm.contains(prodCat);
+            });
+            if (!categoryMatch) continue;
           }
 
           // distance calculation only if we have both user location and product/seller location
@@ -334,7 +344,7 @@ class _search_pageState extends State<search_page> {
           itemCount: filtered.length,
           itemBuilder: (context, idx) {
             final data = filtered[idx];
-            final sellerId = (data['sellerId'] ?? data['sellerUid'] ?? data['ownerId'])?.toString();
+            final sellerId = (data['sellerId'] ?? data['sellerUid'] ?? data['ownerId'] ?? data['seller_id'])?.toString();
             final productId = data['_docId']?.toString();
 
             final distanceKm = data['_distanceKm'] is double ? (data['_distanceKm'] as double) : null;
@@ -366,47 +376,10 @@ class _search_pageState extends State<search_page> {
                       const SizedBox(height: 4),
                       Text("₹${data['price'] ?? ''}", style: TextStyle(color: AppColors.textSoft)),
                       const SizedBox(height: 4),
+                      // You can display distance if desired:
                       // Text(distanceStr, style: TextStyle(color: AppColors.textSoft, fontSize: 12)),
                     ],
                   ),
-                  // trailing: IconButton(
-                  //   icon: const Icon(Icons.location_on_outlined, color: AppColors.pink),
-                  //   onPressed: () async {
-                  //     if (sellerId == null) {
-                  //       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No seller info for this product')));
-                  //       return;
-                  //     }
-
-                  //     // attempt to read seller location from product location first else fetch seller doc
-                  //     double? lat, lng;
-                  //     final prodLoc = data['location'];
-                  //     if (prodLoc is Map) {
-                  //       lat = _parseDouble(prodLoc['lat']) ?? _parseDouble(prodLoc['latitude']);
-                  //       lng = _parseDouble(prodLoc['lng']) ?? _parseDouble(prodLoc['longitude']);
-                  //     }
-
-                  //     if (lat == null || lng == null) {
-                  //       final doc = await FirebaseFirestore.instance.collection('users').doc(sellerId).get();
-                  //       final d = doc.data();
-                  //       if (d != null) {
-                  //         final loc = d['location'];
-                  //         if (loc is Map) {
-                  //           lat = _parseDouble(loc['lat']) ?? _parseDouble(loc['latitude']);
-                  //           lng = _parseDouble(loc['lng']) ?? _parseDouble(loc['longitude']);
-                  //         } else {
-                  //           lat = _parseDouble(d['lat']);
-                  //           lng = _parseDouble(d['lng']);
-                  //         }
-                  //       }
-                  //     }
-
-                  //     if (lat != null && lng != null) {
-                  //       await Navigator.push(context, MaterialPageRoute(builder: (_) => LocationPage(mode: 'find', initialLat: lat, initialLng: lng)));
-                  //     } else {
-                  //       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Seller has not set location')));
-                  //     }
-                  //   },
-                  // ),
                 ),
               ),
             );

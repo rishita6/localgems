@@ -48,6 +48,25 @@ class _LocationPageState extends State<LocationPage> {
   double radiusKm = 10.0; // search radius default
   List<Map<String, dynamic>> _nearbySellers = [];
 
+  // Category filter: added
+  final List<String> categories = [
+    'All',
+    'Mehendi',
+    'Parlour',
+    'Food & Beverages',
+    'Clothing',
+    'Accessories',
+    'Handicrafts',
+    'Home Decor',
+    'Grocery',
+    'Books',
+    'Stationery',
+    'Personal Care',
+    'Grooming',
+    'Other',
+  ];
+  String selectedCategory = 'All';
+
   // theme (kept inline so file is self-contained)
   static const Color _accentPink = Color(0xFFEF3167);
   static const Color _bgBlue = Color(0xFFD0E3FF);
@@ -178,11 +197,22 @@ class _LocationPageState extends State<LocationPage> {
   Future<void> _loadNearbySellers() async {
     _markers.clear();
     _nearbySellers.clear();
-    _setDebug('loading sellers...');
+    _setDebug('loading sellers... (category=$selectedCategory)');
     try {
-      final sellersSnap = await _fire.collection('users').where('role', isEqualTo: 'Seller').get();
+      // Build query and include category filter if selectedCategory != 'All'
+      Query<Map<String, dynamic>> q = _fire.collection('users').where('role', isEqualTo: 'Seller').withConverter<Map<String, dynamic>>(
+        fromFirestore: (snap, _) => snap.data() ?? <String, dynamic>{},
+        toFirestore: (value, _) => value,
+      );
+
+      if (selectedCategory != 'All') {
+        // Use server-side filtering when possible
+        q = q.where('category', isEqualTo: selectedCategory);
+      }
+
+      final sellersSnap = await q.get();
       final allSellers = sellersSnap.docs;
-      _setDebug('fetched ${allSellers.length} seller docs');
+      _setDebug('fetched ${allSellers.length} seller docs (after category filter)');
 
       // If we don't have a user position, we still show sellers (no distance)
       if (_currentLatLng == null) {
@@ -291,6 +321,7 @@ class _LocationPageState extends State<LocationPage> {
 
     if (permission == LocationPermission.deniedForever) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Location permissions permanently denied; open settings to enable.')));
+
       _setDebug('permission denied forever');
       return null;
     }
@@ -510,6 +541,44 @@ class _LocationPageState extends State<LocationPage> {
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
+            // --- CATEGORY DROPDOWN (added) ---
+            Row(
+              children: [
+                const Text('Category:', style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: selectedCategory,
+                        isExpanded: true,
+                        items: categories.map((cat) {
+                          return DropdownMenuItem(
+                            value: cat,
+                            child: Text(cat, overflow: TextOverflow.ellipsis),
+                          );
+                        }).toList(),
+                        onChanged: (value) async {
+                          if (value == null) return;
+                          setState(() {
+                            selectedCategory = value;
+                          });
+                          await _loadNearbySellers(); // reload sellers with new category
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // --- RADIUS SLIDER + REFRESH ---
             Row(
               children: [
                 const Text('Radius:'),

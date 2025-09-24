@@ -1,3 +1,4 @@
+// lib/screens/signup_page.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -18,6 +19,7 @@ class _SignupPageState extends State<SignupPage> {
   String role = 'Customer';
   String name = '', email = '', password = '', confirmPassword = '';
   String businessName = '', contact = '', category = '', profileImage = '';
+  String customCategory = ''; // <--- new: user-entered custom category
   bool isLoading = false;
 
   File? _profileImageFile;
@@ -33,7 +35,9 @@ class _SignupPageState extends State<SignupPage> {
     'Stationery',
     'Personal Care',
     'Grooming',
-    'Other'
+    'Mehendi',
+    'Parlour',
+    'Other' // keep Other as last option
   ];
 
   Future<void> pickAndUploadImage() async {
@@ -67,12 +71,34 @@ class _SignupPageState extends State<SignupPage> {
 
   Future<void> signUp() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // Additional validation for Seller & category
+    if (role == 'Seller') {
+      if (category.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select a category')),
+        );
+        return;
+      }
+      if (category == 'Other' && customCategory.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please specify the category')),
+        );
+        return;
+      }
+    }
+
     setState(() => isLoading = true);
 
     try {
       final userCred = await FirebaseAuth.instance
           .createUserWithEmailAndPassword(
               email: email.trim(), password: password.trim());
+
+      String storedCategory = category;
+      if (role == 'Seller' && category == 'Other') {
+        storedCategory = customCategory.trim();
+      }
 
       final userData = {
         'name': name,
@@ -85,7 +111,7 @@ class _SignupPageState extends State<SignupPage> {
         userData.addAll({
           'businessName': businessName,
           'contact': contact,
-          'category': category,
+          'category': storedCategory,
           'seller_id': userCred.user!.uid,
           'profileImage': profileImage,
         });
@@ -179,6 +205,15 @@ class _SignupPageState extends State<SignupPage> {
                         onPressed: (index) {
                           setState(() {
                             role = index == 0 ? 'Customer' : 'Seller';
+                            // reset seller-specific fields when switching away
+                            if (role != 'Seller') {
+                              businessName = '';
+                              contact = '';
+                              category = '';
+                              customCategory = '';
+                              profileImage = '';
+                              _profileImageFile = null;
+                            }
                           });
                         },
                         children: const [
@@ -246,10 +281,37 @@ class _SignupPageState extends State<SignupPage> {
                                     ))
                                 .toList(),
                             onChanged: (val) =>
-                                setState(() => category = val!),
+                                setState(() => category = val ?? ''),
+                            validator: (v) {
+                              // if Seller requires category - ensure either selected or custom provided
+                              if (role == 'Seller') {
+                                if ((v == null || v.isEmpty) &&
+                                    customCategory.trim().isEmpty) {
+                                  return 'Please choose or enter a category';
+                                }
+                              }
+                              return null;
+                            },
                           ),
                         ),
-                        const SizedBox(height: 3),
+                        const SizedBox(height: 8),
+
+                        // Show custom category text field when "Other" is selected
+                        if (category == 'Other') ...[
+                          TextFormField(
+                            initialValue: customCategory,
+                            style: _textStyle(),
+                            decoration: _inputDecoration('Specify category (e.g., Local Baker)'),
+                            onChanged: (v) => customCategory = v,
+                            validator: (v) {
+                              if (category == 'Other' && (v == null || v.trim().isEmpty)) {
+                                return 'Please specify category';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                       ],
 
                       _field('Email', (val) => email = val,

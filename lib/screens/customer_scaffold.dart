@@ -89,7 +89,8 @@ class CustomerScaffold extends StatelessWidget {
                 const SizedBox(height: 12),
                 ElevatedButton(
                   onPressed: () {
-                    Navigator.pop(ctx);
+                   Navigator.pop(ctx); // close the bottom sheet
+  Navigator.popUntil(context, (route) => route.isFirst);
                     // Optionally navigate to login screen here
                   },
                   style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
