@@ -29,11 +29,12 @@ class _s_dashboardState extends State<s_dashboard> {
   @override
   void initState() {
     super.initState();
-    // Show current month analysis by default
+    // Show current month analysis by default, but clamp end to 'now'
     final now = DateTime.now();
     final startOfMonth = DateTime(now.year, now.month, 1);
     final endOfMonth = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
-    selectedRange = DateTimeRange(start: startOfMonth, end: endOfMonth);
+    final clampedEnd = endOfMonth.isAfter(now) ? now : endOfMonth;
+    selectedRange = DateTimeRange(start: startOfMonth, end: clampedEnd);
     _fetchDashboardData();
   }
 
@@ -53,7 +54,7 @@ class _s_dashboardState extends State<s_dashboard> {
     // Orders (fetch by createdAt range then filter locally for seller's items)
     Query ordersQuery = FirebaseFirestore.instance.collection('orders');
 
-    // Use createdAt if present
+    // Use createdAt if present. Firestore requires that fields used in range filters are indexed.
     ordersQuery = ordersQuery
         .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
         .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(end))
@@ -70,7 +71,6 @@ class _s_dashboardState extends State<s_dashboard> {
     int ordersWithSeller = 0;
 
     for (final doc in orderSnap.docs) {
-      // SAFELY cast doc.data() to Map<String, dynamic>
       final rawData = doc.data();
       final data = (rawData is Map) ? Map<String, dynamic>.from(rawData.cast<String, dynamic>()) : <String, dynamic>{};
 
@@ -84,7 +84,6 @@ class _s_dashboardState extends State<s_dashboard> {
         final item = (raw is Map) ? Map<String, dynamic>.from(raw.cast<String, dynamic>()) : <String, dynamic>{};
         final itemSellerId = (item['sellerId'] ?? item['seller_id'])?.toString() ?? '';
         if (itemSellerId == sellerId) {
-          // quantity and price fields may vary; try common keys
           final qtyField = item['quantity'] ?? item['qty'] ?? 1;
           final priceField = item['price'] ?? item['amount'] ?? item['total'] ?? 0;
 
@@ -94,23 +93,19 @@ class _s_dashboardState extends State<s_dashboard> {
           sellerOrderSubtotal += p * q;
           sellerItemQtyTotal += q;
 
-          // best sellers counting by product name (fallback to productId)
           final prodName = (item['name'] ?? item['productName'] ?? item['productId'] ?? 'Unknown').toString();
           productCounts[prodName] = (productCounts[prodName] ?? 0) + q;
         }
       }
 
       if (sellerOrderSubtotal > 0.0) {
-        // this order includes at least one item from this seller
         ordersWithSeller += 1;
         revenue += sellerOrderSubtotal;
 
-        // customer id: try common keys
         final custIdRaw = data['userId'] ?? data['customer_id'] ?? data['customerId'] ?? data['user_id'];
         final custId = custIdRaw?.toString() ?? '';
         if (custId.isNotEmpty) buyers.add(custId);
 
-        // createdAt fallback
         DateTime date = DateTime.now();
         final ts = data['createdAt'] ?? data['timestamp'];
         if (ts is Timestamp) {
@@ -119,7 +114,6 @@ class _s_dashboardState extends State<s_dashboard> {
           date = DateTime.fromMillisecondsSinceEpoch(ts);
         }
 
-        // push summary for recentOrders (keep order id so we can fetch full doc when tapping)
         recentOrders.add({
           'id': doc.id,
           'status': (data['orderStatus'] ?? '').toString(),
@@ -132,11 +126,9 @@ class _s_dashboardState extends State<s_dashboard> {
     totalOrders = ordersWithSeller;
     newCustomers = buyers.length;
 
-    // keep only top 5 recent orders
     recentOrders.sort((a, b) => (b['date'] as DateTime).compareTo(a['date'] as DateTime));
     if (recentOrders.length > 5) recentOrders = recentOrders.take(5).toList();
 
-    // Best sellers (top 3 by qty)
     final sorted = productCounts.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
     bestSellers = sorted.take(3).map((e) => {'name': e.key, 'qty': e.value}).toList();
 
@@ -144,14 +136,31 @@ class _s_dashboardState extends State<s_dashboard> {
   }
 
   Future<void> _pickDateRange() async {
+    final now = DateTime.now();
+
+    // ensure the initial range we pass to the picker is within valid bounds
+    DateTimeRange? initial = selectedRange;
+    if (initial != null) {
+      final clampedEnd = initial.end.isAfter(now) ? now : initial.end;
+      if (clampedEnd != initial.end) {
+        initial = DateTimeRange(start: initial.start, end: clampedEnd);
+      }
+    }
+
     final picked = await showDateRangePicker(
       context: context,
       firstDate: DateTime(2022),
-      lastDate: DateTime.now(),
-      initialDateRange: selectedRange,
+      lastDate: now, // lastDate must be >= initial.end
+      initialDateRange: initial,
     );
+
     if (picked != null) {
-      setState(() => selectedRange = picked);
+      // clamp picked.end as extra safety (though picker won't allow > lastDate)
+      final clampedPicked = DateTimeRange(
+        start: picked.start,
+        end: picked.end.isAfter(now) ? now : picked.end,
+      );
+      setState(() => selectedRange = clampedPicked);
       await _fetchDashboardData();
     }
   }
@@ -175,7 +184,6 @@ class _s_dashboardState extends State<s_dashboard> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // -------- Stats Card --------
             _cardWrapper(
               title: "Overview ($rangeText)",
               child: GridView.count(
@@ -184,7 +192,7 @@ class _s_dashboardState extends State<s_dashboard> {
                 crossAxisCount: 2,
                 crossAxisSpacing: 14,
                 mainAxisSpacing: 14,
-                childAspectRatio: 0.98, // taller to avoid tiny overflows
+                childAspectRatio: 0.98,
                 children: [
                   _statItem("Products", "$totalProducts", Icons.store_rounded),
                   _statItem("Orders", "$totalOrders", Icons.shopping_cart_rounded),
@@ -193,10 +201,7 @@ class _s_dashboardState extends State<s_dashboard> {
                 ],
               ),
             ),
-
             const SizedBox(height: 10),
-
-            // -------- Recent Orders Card --------
             _cardWrapper(
               title: "Recent Orders",
               child: recentOrders.isEmpty
@@ -214,10 +219,7 @@ class _s_dashboardState extends State<s_dashboard> {
                       itemBuilder: (_, i) => _orderTile(recentOrders[i]),
                     ),
             ),
-
             const SizedBox(height: 20),
-
-            // -------- Best Sellers Card (horizontal list) --------
             _cardWrapper(
               title: "Best Selling Products",
               child: bestSellers.isEmpty
@@ -242,7 +244,6 @@ class _s_dashboardState extends State<s_dashboard> {
   }
 
   // ---------- Widgets ----------
-
   Widget _cardWrapper({required String title, required Widget child}) {
     return Container(
       width: double.infinity,
@@ -277,7 +278,7 @@ class _s_dashboardState extends State<s_dashboard> {
   Widget _statItem(String title, String value, IconData icon) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFFef3167), // pink mini-card
+        color: const Color(0xFFef3167),
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
@@ -287,11 +288,10 @@ class _s_dashboardState extends State<s_dashboard> {
           ),
         ],
       ),
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 16), // tiny bottom cushion
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // glowing circle behind icon
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
@@ -317,8 +317,8 @@ class _s_dashboardState extends State<s_dashboard> {
             softWrap: false,
             overflow: TextOverflow.fade,
             style: const TextStyle(
-              fontSize: 12, // tighter
-              height: 1.1, // tighter line height
+              fontSize: 12,
+              height: 1.1,
               color: Colors.white70,
             ),
           ),
@@ -346,7 +346,6 @@ class _s_dashboardState extends State<s_dashboard> {
           }
           final data = docSnap.data() ?? <String, dynamic>{};
 
-          // Navigate to seller-facing order details page
           if (mounted) {
             Navigator.of(context).push(MaterialPageRoute(
               builder: (_) => OrderDetailsPage(orderId: id, orderData: Map<String, dynamic>.from(data), mySellerId: sellerId),

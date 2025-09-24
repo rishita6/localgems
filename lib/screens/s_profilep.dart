@@ -1,14 +1,16 @@
-// lib/s_profilep.dart
+// lib/screens/s_profilep.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+
 import 'edit_seller_profile.dart';
 import 'login_page.dart';
 import 's_inventoryp.dart';
 import 'customer_product_page.dart';
 import 'chatpage.dart';
-import 'location_page.dart'; // to open map when pressing 'Show on Map'
+// NOTE: we changed this import to the focused seller map page
+import 'seller_location_page.dart'; // <-- new focused map for a single seller
 
 class s_profilep extends StatefulWidget {
   final String? sellerId;
@@ -132,24 +134,38 @@ class _s_profilepState extends State<s_profilep> {
   }
 
   /// Try to open seller on map. If `data` doesn't include location, fetch the user doc.
+  /// NOTE: This now opens **SellerLocationPage** (single-seller map view) and does NOT
+  /// change any other UI or behavior of the profile page.
   Future<void> _openSellerOnMap({required String sellerId, Map<String, dynamic>? data}) async {
     try {
       // try data first
       Map<String, double>? latlng = _readLatLngFromData(data);
+      Map<String, dynamic>? fetchedData;
       if (latlng == null) {
         // fetch the seller doc from firestore
         final doc = await FirebaseFirestore.instance.collection('users').doc(sellerId).get();
-        final d = doc.data() as Map<String, dynamic>?;
-        latlng = _readLatLngFromData(d);
+        fetchedData = doc.data() as Map<String, dynamic>?;
+        latlng = _readLatLngFromData(fetchedData);
       }
 
       if (latlng != null) {
         final lat = latlng['lat']!;
         final lng = latlng['lng']!;
+        final sellerName = (data?['businessName'] ?? fetchedData?['businessName'] ?? data?['name'] ?? fetchedData?['name'] ?? 'Seller').toString();
+        final sellerAddress = (data?['location'] is Map ? (data?['location']?['address'] ?? data?['address']) : (data?['address'] ?? fetchedData?['location']?['address'] ?? fetchedData?['address']))?.toString() ?? '';
+
         if (!mounted) return;
+        // Open focused single-seller map page (does not show radius/category UI)
         await Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => LocationPage(mode: 'find', initialLat: lat, initialLng: lng)),
+          MaterialPageRoute(
+            builder: (_) => SellerLocationPage(
+              lat: lat,
+              lng: lng,
+              sellerName: sellerName,
+              address: sellerAddress.isNotEmpty ? sellerAddress : null,
+            ),
+          ),
         );
       } else {
         if (!mounted) return;
@@ -203,180 +219,179 @@ class _s_profilepState extends State<s_profilep> {
   }
 
   // show reviews modal
-Future<void> _showReviewsModal(String sellerId) async {
-  final me = FirebaseAuth.instance.currentUser?.uid;
-  // Fetch existing review (if any) before opening modal so we can prefill
-  double initialRating = 5.0;
-  final TextEditingController controller = TextEditingController();
+  Future<void> _showReviewsModal(String sellerId) async {
+    final me = FirebaseAuth.instance.currentUser?.uid;
+    // Fetch existing review (if any) before opening modal so we can prefill
+    double initialRating = 5.0;
+    final TextEditingController controller = TextEditingController();
 
-  if (me != null) {
-    try {
-      final existing = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(sellerId)
-          .collection('reviews')
-          .doc(me)
-          .get();
-      if (existing.exists) {
-        final data = existing.data();
-        final r = data?['rating'];
-        final c = data?['comment'];
-        if (r != null) {
-          initialRating = (r is num) ? r.toDouble() : double.tryParse(r.toString()) ?? 5.0;
+    if (me != null) {
+      try {
+        final existing = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(sellerId)
+            .collection('reviews')
+            .doc(me)
+            .get();
+        if (existing.exists) {
+          final data = existing.data();
+          final r = data?['rating'];
+          final c = data?['comment'];
+          if (r != null) {
+            initialRating = (r is num) ? r.toDouble() : double.tryParse(r.toString()) ?? 5.0;
+          }
+          if (c != null) {
+            controller.text = c.toString();
+          }
         }
-        if (c != null) {
-          controller.text = c.toString();
-        }
+      } catch (e) {
+        debugPrint('Failed to fetch existing review: $e');
       }
-    } catch (e) {
-      debugPrint('Failed to fetch existing review: $e');
     }
-  }
 
-  final isCustomer = me != null && me != sellerId;
+    final isCustomer = me != null && me != sellerId;
 
-  showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    backgroundColor: Colors.transparent,
-    builder: (ctx) {
-      // use StatefulBuilder inside modal so local UI updates are immediate
-      return StatefulBuilder(
-        builder: (context, setModalState) {
-          double rating = initialRating;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        // use StatefulBuilder inside modal so local UI updates are immediate
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            double rating = initialRating;
 
-          return DraggableScrollableSheet(
-            initialChildSize: 0.75,
-            minChildSize: 0.4,
-            maxChildSize: 0.95,
-            builder: (_, controllerScroll) {
-              return Container(
-                decoration: const BoxDecoration(
-                  color: cardWhite,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-                ),
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(4))),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        const Expanded(child: Text('Customer Reviews', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
-                        StreamBuilder<DocumentSnapshot>(
-                          stream: FirebaseFirestore.instance.collection('users').doc(sellerId).snapshots(),
-                          builder: (c, s) {
-                            final doc = s.data;
-                            final avg = (doc?.data() as Map<String, dynamic>?)?['avgRating'];
-                            final total = (doc?.data() as Map<String, dynamic>?)?['totalReviews'] ?? 0;
-                            final avgD = (avg is num) ? avg.toDouble() : double.tryParse(avg?.toString() ?? '') ?? 0.0;
-                            return Text('${avgD.toStringAsFixed(1)} • ${total ?? 0} reviews', style: const TextStyle(color: textSoft));
-                          },
-                        )
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: StreamBuilder<QuerySnapshot>(
-                        stream: FirebaseFirestore.instance
-                            .collection('users')
-                            .doc(sellerId)
-                            .collection('reviews')
-                            .orderBy('createdAt', descending: true)
-                            .snapshots(),
-                        builder: (_, snap) {
-                          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-                          final docs = snap.data!.docs;
-                          if (docs.isEmpty) return const Center(child: Text('No reviews yet'));
-                          return ListView.separated(
-                            controller: controllerScroll,
-                            itemCount: docs.length,
-                            separatorBuilder: (_, __) => const Divider(),
-                            itemBuilder: (_, i) {
-                              final r = docs[i].data() as Map<String, dynamic>;
-                              final ratingVal = (r['rating'] is num) ? (r['rating'] as num).toDouble() : double.tryParse(r['rating']?.toString() ?? '0') ?? 0;
-                              return ListTile(
-                                leading: CircleAvatar(
-                                  backgroundColor: bgBlue,
-                                  child: Text(
-                                    (r['comment'] ?? '').toString().isNotEmpty
-                                        ? (r['comment'].toString()[0].toUpperCase())
-                                        : 'U',
-                                    style: const TextStyle(color: Colors.white),
-                                  ),
-                                ),
-                                title: Row(children: [
-                                  Row(children: List.generate(5, (j) => Icon(j < ratingVal ? Icons.star : Icons.star_border, color: Colors.amber, size: 16))),
-                                  const SizedBox(width: 8),
-                                  Text('${ratingVal.toStringAsFixed(1)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                                ]),
-                                subtitle: Text(r['comment'] ?? ''),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ),
-
-                    const SizedBox(height: 12),
-                    if (isCustomer)
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
+            return DraggableScrollableSheet(
+              initialChildSize: 0.75,
+              minChildSize: 0.4,
+              maxChildSize: 0.95,
+              builder: (_, controllerScroll) {
+                return Container(
+                  decoration: const BoxDecoration(
+                    color: cardWhite,
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                  ),
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(4))),
+                      const SizedBox(height: 12),
+                      Row(
                         children: [
-                          const Text('Leave a review', style: TextStyle(fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 8),
-
-                          // Stars (use setModalState so only modal updates)
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: List.generate(5, (i) {
-                              return IconButton(
-                                icon: Icon(i < rating ? Icons.star : Icons.star_border, color: Colors.amber),
-                                onPressed: () {
-                                  setModalState(() => rating = i + 1.0);
-                                },
-                              );
-                            }),
-                          ),
-
-                          // comment input — use controller we prefilled earlier
-                          TextField(
-                            controller: controller,
-                            decoration: const InputDecoration(labelText: 'Write your comments (optional)'),
-                          ),
-                          const SizedBox(height: 8),
-
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: accentPink),
-                            onPressed: () async {
-                              final meId = FirebaseAuth.instance.currentUser?.uid;
-                              if (meId == null) {
-                                if (!mounted) return;
-                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please login to review')));
-                                return;
-                              }
-                              final comment = controller.text.trim();
-                              // call your existing submit helper
-                              await _submitReview(sellerId: sellerId, userId: meId, rating: rating, comment: comment);
-                              if (!mounted) return;
-                              Navigator.pop(context);
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Review submitted')));
+                          const Expanded(child: Text('Customer Reviews', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+                          StreamBuilder<DocumentSnapshot>(
+                            stream: FirebaseFirestore.instance.collection('users').doc(sellerId).snapshots(),
+                            builder: (c, s) {
+                              final doc = s.data;
+                              final avg = (doc?.data() as Map<String, dynamic>?)?['avgRating'];
+                              final total = (doc?.data() as Map<String, dynamic>?)?['totalReviews'] ?? 0;
+                              final avgD = (avg is num) ? avg.toDouble() : double.tryParse(avg?.toString() ?? '') ?? 0.0;
+                              return Text('${avgD.toStringAsFixed(1)} • ${total ?? 0} reviews', style: const TextStyle(color: textSoft));
                             },
-                            child: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Text('Submit review',style: TextStyle(color: cardWhite, fontWeight: FontWeight.bold))),
-                          ),
+                          )
                         ],
                       ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      );
-    },
-  );
-}
+                      const SizedBox(height: 12),
+                      Expanded(
+                        child: StreamBuilder<QuerySnapshot>(
+                          stream: FirebaseFirestore.instance
+                              .collection('users')
+                              .doc(sellerId)
+                              .collection('reviews')
+                              .orderBy('createdAt', descending: true)
+                              .snapshots(),
+                          builder: (_, snap) {
+                            if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                            final docs = snap.data!.docs;
+                            if (docs.isEmpty) return const Center(child: Text('No reviews yet'));
+                            return ListView.separated(
+                              controller: controllerScroll,
+                              itemCount: docs.length,
+                              separatorBuilder: (_, __) => const Divider(),
+                              itemBuilder: (_, i) {
+                                final r = docs[i].data() as Map<String, dynamic>;
+                                final ratingVal = (r['rating'] is num) ? (r['rating'] as num).toDouble() : double.tryParse(r['rating']?.toString() ?? '0') ?? 0;
+                                return ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor: bgBlue,
+                                    child: Text(
+                                      (r['comment'] ?? '').toString().isNotEmpty
+                                          ? (r['comment'].toString()[0].toUpperCase())
+                                          : 'U',
+                                      style: const TextStyle(color: Colors.white),
+                                    ),
+                                  ),
+                                  title: Row(children: [
+                                    Row(children: List.generate(5, (j) => Icon(j < ratingVal ? Icons.star : Icons.star_border, color: Colors.amber, size: 16))),
+                                    const SizedBox(width: 8),
+                                    Text('${ratingVal.toStringAsFixed(1)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                                  ]),
+                                  subtitle: Text(r['comment'] ?? ''),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ),
 
+                      const SizedBox(height: 12),
+                      if (isCustomer)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text('Leave a review', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 8),
+
+                            // Stars (use setModalState so only modal updates)
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: List.generate(5, (i) {
+                                return IconButton(
+                                  icon: Icon(i < rating ? Icons.star : Icons.star_border, color: Colors.amber),
+                                  onPressed: () {
+                                    setModalState(() => rating = i + 1.0);
+                                  },
+                                );
+                              }),
+                            ),
+
+                            // comment input — use controller we prefilled earlier
+                            TextField(
+                              controller: controller,
+                              decoration: const InputDecoration(labelText: 'Write your comments (optional)'),
+                            ),
+                            const SizedBox(height: 8),
+
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: accentPink),
+                              onPressed: () async {
+                                final meId = FirebaseAuth.instance.currentUser?.uid;
+                                if (meId == null) {
+                                  if (!mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please login to review')));
+                                  return;
+                                }
+                                final comment = controller.text.trim();
+                                // call your existing submit helper
+                                await _submitReview(sellerId: sellerId, userId: meId, rating: rating, comment: comment);
+                                if (!mounted) return;
+                                Navigator.pop(context);
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Review submitted')));
+                              },
+                              child: const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Text('Submit review',style: TextStyle(color: cardWhite, fontWeight: FontWeight.bold))),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
